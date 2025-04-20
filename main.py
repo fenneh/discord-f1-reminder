@@ -12,7 +12,9 @@ import argparse # Add argparse import
 load_dotenv() # Load environment variables from .env file
 
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
-F1_API_URL = "https://api.jolpi.ca/ergast/f1/current.json" # Use current season
+# Revert back to the jolpi.ca mirror
+F1_API_URL = "https://api.jolpi.ca/ergast/f1/current.json" # Use jolpi.ca mirror
+# F1_API_URL = "https://ergast.com/api/f1/current.json" # Official Ergast API endpoint (being deprecated)
 WEATHER_API_KEY = os.getenv('WEATHER_API_KEY') # Add Weather API Key
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/forecast"
 
@@ -30,8 +32,38 @@ except (ValueError, TypeError):
 # Load Bot Name from .env, default if missing
 BOT_NAME = os.getenv('BOT_NAME', 'F1 Reminder Bot')
 
+# --- Mappings ---
+ERG_TO_OPENF1_CIRCUIT_MAP = {
+    "bahrain": 48,
+    "jeddah": 70,
+    "albert_park": 58, # Melbourne
+    "suzuka": 22,
+    "shanghai": 17,
+    "miami": 73,
+    "imola": 21,
+    "monaco": 6,
+    "villeneuve": 7, # Canada
+    "catalunya": 4, # Spain
+    "red_bull_ring": 9, # Austria
+    "silverstone": 3, # Great Britain
+    "hungaroring": 10, # Hungary
+    "spa": 5, # Belgium
+    "zandvoort": 11, # Netherlands
+    "monza": 13, # Italy
+    "baku": 67, # Azerbaijan
+    "marina_bay": 15, # Singapore
+    "americas": 63, # USA (COTA)
+    "rodriguez": 16, # Mexico
+    "interlagos": 18, # Brazil
+    "vegas": 77, # Las Vegas
+    "losail": 75, # Qatar
+    "yas_marina": 24 # Abu Dhabi
+    # Add more mappings as needed if new circuits appear
+}
+
 # Define event types in order of typical occurrence within a race weekend
 EVENT_TYPES_ORDERED = ['FirstPractice', 'SecondPractice', 'ThirdPractice', 'Sprint', 'Qualifying', 'Race']
+EVENT_TYPES_REVERSED = list(reversed(EVENT_TYPES_ORDERED))
 
 
 def fetch_schedule():
@@ -50,8 +82,9 @@ def fetch_schedule():
 
 def fetch_starting_grid(season, round_num):
     """Fetches the starting grid (qualifying results) for a specific race round."""
-    # Use the round-specific endpoint
+    # Use the round-specific endpoint - Use jolpi.ca mirror
     grid_url = f"https://api.jolpi.ca/ergast/f1/{season}/{round_num}/qualifying.json"
+    # grid_url = f"https://ergast.com/api/f1/{season}/{round_num}/qualifying.json" # Official Ergast API endpoint (being deprecated)
     print(f"Fetching starting grid from: {grid_url}") # Updated log message
     try:
         response = requests.get(grid_url)
@@ -92,6 +125,88 @@ def fetch_starting_grid(season, round_num):
          return None
     except Exception as e:
         print(f"An unexpected error occurred fetching grid: {e}")
+        return None
+
+def fetch_starting_grid_openf1(season, circuit_id):
+    """Fetches the starting grid (qualifying results) for a specific race using OpenF1 API."""
+    print(f"Attempting OpenF1 fallback for {season} at {circuit_id}")
+
+    circuit_key = ERG_TO_OPENF1_CIRCUIT_MAP.get(circuit_id)
+    if not circuit_key:
+        print(f"  Error: OpenF1 circuit_key not found for Ergast circuitId '{circuit_id}'. Cannot fetch grid.")
+        return None
+
+    openf1_session_url = f"https://api.openf1.org/v1/sessions?year={season}&circuit_key={circuit_key}&session_name=Qualifying"
+    session_key = None
+
+    try:
+        # 1. Find the session_key for Qualifying
+        print(f"  Fetching OpenF1 session key from: {openf1_session_url}")
+        response = requests.get(openf1_session_url)
+        response.raise_for_status()
+        sessions_data = response.json()
+        if not sessions_data:
+            print(f"  Error: No OpenF1 Qualifying session found for {season}, circuit_key {circuit_key}.")
+            return None
+        # Assume the first (and likely only) result is the correct one
+        session_key = sessions_data[0].get('session_key')
+        if not session_key:
+             print(f"  Error: Could not extract session_key from OpenF1 response.")
+             return None
+        print(f"  Found OpenF1 session_key: {session_key}")
+
+        # 2. Fetch the results for that session_key
+        openf1_results_url = f"https://api.openf1.org/v1/results?session_key={session_key}"
+        print(f"  Fetching OpenF1 results from: {openf1_results_url}")
+        response = requests.get(openf1_results_url)
+        response.raise_for_status()
+        results_data = response.json()
+        if not results_data:
+            print(f"  Error: No OpenF1 results found for session_key {session_key}.")
+            return None
+
+        # 3. Parse and reformat results
+        formatted_grid = []
+        for result in results_data:
+            # Ensure position exists and is a valid number for sorting
+            position = result.get('position')
+            if position is None:
+                continue # Skip drivers without a position (e.g., DNS)
+            try:
+                position = int(position)
+            except (ValueError, TypeError):
+                continue # Skip if position is not a valid integer
+
+            family_name = result.get('family_name')
+            if not family_name:
+                # Fallback to full name if family name missing
+                family_name = result.get('full_name', 'N/A')
+
+            formatted_grid.append({
+                'position': position,
+                'Driver': {'familyName': family_name}
+            })
+
+        if not formatted_grid:
+            print("  Error: Could not format any valid grid positions from OpenF1 results.")
+            return None
+
+        # 4. Sort by position
+        formatted_grid.sort(key=lambda x: x['position'])
+        print(f"  Successfully fetched and formatted {len(formatted_grid)} grid positions from OpenF1.")
+        return formatted_grid
+
+    except requests.exceptions.RequestException as e:
+        print(f"  Error fetching OpenF1 data: {e}")
+        return None
+    except json.JSONDecodeError:
+        print(f"  Error decoding JSON response from OpenF1 API.")
+        return None
+    except IndexError:
+         print(f"  Error accessing OpenF1 data. Response structure might be unexpected.")
+         return None
+    except Exception as e:
+        print(f"  An unexpected error occurred fetching OpenF1 grid: {e}")
         return None
 
 def fetch_weather(lat, lon, event_dt_utc):
@@ -259,9 +374,15 @@ def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
     # --- Fetch and Format Starting Grid (only for Race events) ---
     grid_field = None
     if event_type == 'Race':
-        # Pass the round number correctly
+        # Try Ergast first
         grid_data = fetch_starting_grid(race_info['season'], race_info['round'])
-        # Only proceed if grid_data is actually found
+
+        # If Ergast fails, try OpenF1
+        if grid_data is None:
+            print("Ergast grid data not found. Falling back to OpenF1...")
+            grid_data = fetch_starting_grid_openf1(race_info['season'], race_info['Circuit']['circuitId'])
+
+        # Only proceed if grid_data is actually found (from either source)
         if grid_data:
             grid_lines = []
             max_len_left = 0
@@ -444,6 +565,68 @@ def find_and_send_next_event():
     else:
         print("No upcoming F1 events found in the current season schedule.")
 
+def find_and_send_previous_event():
+    """Finds the most recently completed F1 event and sends a notification immediately."""
+    print("Finding the most recently completed F1 event to send a test notification...")
+    schedule = fetch_schedule()
+    if not schedule:
+        print("Could not fetch schedule. Aborting test.")
+        return
+
+    # Determine the latest season year in the fetched data
+    latest_season = None
+    try:
+        seasons = {int(race.get('season')) for race in schedule if race.get('season')}
+        if seasons:
+            latest_season = str(max(seasons))
+            print(f"Latest season found in schedule data: {latest_season}")
+        else:
+            print("Could not determine latest season from schedule data.")
+            return
+    except (ValueError, TypeError):
+         print("Error determining latest season from schedule data.")
+         return
+
+    # Filter schedule to only include races from the latest season
+    latest_season_schedule = [race for race in schedule if race.get('season') == latest_season]
+    if not latest_season_schedule:
+        print(f"No races found for the latest season ({latest_season}) in the schedule data.")
+        return
+
+    previous_event_dt = None
+    previous_event_type = None
+    previous_race_info = None
+    previous_event_formatted_time = None
+
+    now_utc = datetime.now(timezone.utc)
+
+    # Iterate through races of the LATEST season only
+    # Iterate through event types in REVERSE order to find the latest past event
+    for race in latest_season_schedule: # Iterate races chronologically within the latest season
+        for event_type in EVENT_TYPES_REVERSED: # Iterate events within race weekend backwards
+            formatted_time_str, event_dt_utc = format_event_time(race, event_type)
+            # Check if the event time is valid AND in the past
+            if event_dt_utc and event_dt_utc < now_utc:
+                # Is this event later than the current 'previous_event' found?
+                if previous_event_dt is None or event_dt_utc > previous_event_dt:
+                    previous_event_dt = event_dt_utc
+                    previous_event_type = event_type
+                    previous_race_info = race
+                    previous_event_formatted_time = formatted_time_str
+
+    if previous_event_dt:
+        print(f"Most recent past event found: {previous_race_info['raceName']} - {previous_event_type} at {previous_event_dt}")
+        # Create embed for the test message
+        embed, event_emoji = create_discord_embed(previous_race_info, previous_event_type, previous_event_formatted_time, previous_event_dt)
+        embed["title"] = f":rewind: TEST (Previous): {event_emoji} F1 {previous_event_type} Reminder!"
+        # Update description for test message
+        embed["description"] = f"**(Test Notification - Previous Event)**\nThe **{previous_event_type}** session for the **[{previous_race_info['raceName']}]({previous_race_info['url']})** occurred {previous_event_formatted_time}."
+        # Remove timestamp for past events?
+        # embed.pop("timestamp", None)
+        send_discord_notification(embed)
+    else:
+        print(f"No past F1 events found in the latest season ({latest_season}) schedule.")
+
 def schedule_all_notifications():
     """Fetches the schedule and schedules notifications for all future events."""
     print("Fetching F1 schedule and scheduling notifications...")
@@ -472,14 +655,23 @@ def schedule_all_notifications():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="F1 Event Reminder Bot")
-    parser.add_argument(
+    # Group test flags so only one can be used
+    test_group = parser.add_mutually_exclusive_group()
+    test_group.add_argument(
         '--test-next-event',
         action='store_true',
         help='Send a test notification for the next upcoming event immediately.'
+    )
+    test_group.add_argument(
+        '--test-previous-event',
+        action='store_true',
+        help='Send a test notification for the most recently completed event immediately.'
     )
     args = parser.parse_args()
 
     if args.test_next_event:
         find_and_send_next_event()
+    elif args.test_previous_event:
+        find_and_send_previous_event()
     else:
         schedule_all_notifications() 
