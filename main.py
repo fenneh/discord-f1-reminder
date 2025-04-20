@@ -48,11 +48,59 @@ def fetch_schedule():
         print("Error decoding JSON response from F1 API.")
         return None
 
+def fetch_starting_grid(season, round_num):
+    """Fetches the starting grid (qualifying results) for a specific race round."""
+    # Use the round-specific endpoint
+    grid_url = f"https://api.jolpi.ca/ergast/f1/{season}/{round_num}/qualifying.json"
+    print(f"Fetching starting grid from: {grid_url}") # Updated log message
+    try:
+        response = requests.get(grid_url)
+        response.raise_for_status()
+        data = response.json()
+
+        races_data = data.get('MRData', {}).get('RaceTable', {}).get('Races', [])
+        if not races_data:
+            # This might happen if the round number is invalid or qualifying data doesn't exist yet
+            print(f"No race data found in qualifying response for {season} round {round_num}.")
+            return None
+
+        # Since we requested a specific round, we expect only one race object
+        target_race = races_data[0]
+
+        qualifying_results = target_race.get('QualifyingResults', [])
+        if not qualifying_results:
+            print(f"No qualifying results found for round {round_num}.")
+            return None
+
+        # Sort by position just in case the API doesn't guarantee it (it usually does)
+        qualifying_results.sort(key=lambda x: int(x.get('position', 99)))
+        print(f"Successfully found {len(qualifying_results)} qualifying results for round {round_num}.")
+        return qualifying_results
+
+    except requests.exceptions.RequestException as e:
+        # Check for 404 or other errors that might indicate missing data for the specific round
+        if response is not None and response.status_code == 404:
+             print(f"Qualifying data not found (404) for {season} round {round_num}.")
+        else:
+             print(f"Error fetching starting grid: {e}")
+        return None
+    except json.JSONDecodeError:
+        print("Error decoding JSON response from qualifying API.")
+        return None
+    except IndexError:
+         print(f"Error accessing race data for round {round_num}. Response structure might be unexpected.")
+         return None
+    except Exception as e:
+        print(f"An unexpected error occurred fetching grid: {e}")
+        return None
+
 def fetch_weather(lat, lon, event_dt_utc):
-    """Fetches weather forecast for the given coordinates around the event time."""
+    """Fetches weather forecast for the given coordinates around the event time.
+       Returns a tuple: (formatted_weather_string_without_rain_chance, pop_percentage)
+    """
     if not WEATHER_API_KEY:
         print("Weather API key not configured. Skipping weather fetch.")
-        return "Weather N/A (No API Key)"
+        return "Weather N/A (No API Key)", 0 # Return 0 for pop
 
     try:
         params = {
@@ -105,21 +153,23 @@ def fetch_weather(lat, lon, event_dt_utc):
             weather_icon = icon_map.get(icon_code, "")
 
 
-            # Format the string nicely
-            return (f"{weather_icon} {weather_desc}\n" # Weather description
-                    f"🌡️ Temp: {temp:.1f}°C (Feels like: {feels_like:.1f}°C)\n"
-                    f"💧 Humidity: {humidity}%\n"
-                    f"💨 Wind: {wind_speed_kmh:.1f} km/h\n"
-                    f"☔ Rain Chance: {pop:.0f}%" )
+            # Format the string nicely, EXCLUDING rain chance for now
+            weather_string = (
+                f"{weather_icon} {weather_desc}\n" # Weather description
+                f"🌡️ Temp: {temp:.1f}°C (Feels like: {feels_like:.1f}°C)\n"
+                f"💧 Humidity: {humidity}%\n"
+                f"💨 Wind: {wind_speed_kmh:.1f} km/h"
+            )
+            return weather_string, pop # Return string and pop value separately
         else:
-            return "Weather forecast not available for this time."
+            return "Weather forecast not available for this time.", 0
 
     except requests.exceptions.RequestException as e:
         print(f"Error fetching weather data: {e}")
-        return "Weather fetch failed"
+        return "Weather fetch failed", 0
     except Exception as e:
         print(f"Error processing weather data: {e}")
-        return "Weather processing error"
+        return "Weather processing error", 0
 
 def format_event_time(race_info, event_type):
     """Formats the event date and time into a more readable string and a datetime object.
@@ -190,7 +240,7 @@ def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
     # Fetch Weather
     lat = race_info['Circuit']['Location']['lat']
     lon = race_info['Circuit']['Location']['long']
-    weather_info = fetch_weather(lat, lon, event_dt_utc)
+    weather_string, pop = fetch_weather(lat, lon, event_dt_utc)
 
     # Construct Google Maps satellite view link
     # Use zoom level 16 for a reasonable circuit view
@@ -200,8 +250,52 @@ def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
     rain_zoom = 9
     rain_radar_url = f"https://www.rainviewer.com/weather-radar-map-live.html?loc={lat},{lon},{rain_zoom}&oCS=1&c=3&o=83&lm=1&layer=radar&sm=1&sn=1"
 
+    # Append rain chance and radar link to the weather string
+    weather_field_value = f"{weather_string}\n☔ Rain Chance: {pop:.0f}% ([Radar]({rain_radar_url}))"
+
     # Calculate Unix timestamp for Discord formatting
     unix_timestamp = int(event_dt_utc.timestamp())
+
+    # --- Fetch and Format Starting Grid (only for Race events) ---
+    grid_field = None
+    if event_type == 'Race':
+        # Pass the round number correctly
+        grid_data = fetch_starting_grid(race_info['season'], race_info['round'])
+        # Only proceed if grid_data is actually found
+        if grid_data:
+            grid_lines = []
+            max_len_left = 0
+            pairs = []
+            # Prepare pairs and find max lengths for consistent formatting
+            for i in range(0, len(grid_data), 2):
+                pos1_str = f"P{grid_data[i]['position']}"
+                driver1_name = grid_data[i]['Driver'].get('familyName', 'N/A')
+                left_col = f"{pos1_str:<3} {driver1_name}" # Pad position to 3 chars (e.g., P1 , P10)
+                max_len_left = max(max_len_left, len(left_col))
+
+                right_col = ""
+                if i + 1 < len(grid_data):
+                    pos2_str = f"P{grid_data[i+1]['position']}"
+                    driver2_name = grid_data[i+1]['Driver'].get('familyName', 'N/A')
+                    right_col = f"{pos2_str:<3} {driver2_name}"
+
+                pairs.append((left_col, right_col))
+
+            # Build the final lines, padding the left column
+            for left, right in pairs:
+                grid_lines.append(f"{left:<{max_len_left}} | {right}")
+
+            # Only create the field if we successfully formatted grid lines
+            if grid_lines:
+                grid_field_value = "```\n" + "\n".join(grid_lines) + "\n```"
+                grid_field = {
+                    "name": "🏁 Starting Grid",
+                    "value": grid_field_value,
+                    "inline": False
+                }
+            # If formatting failed or grid_lines is empty, grid_field remains None
+        # If grid_data was None initially, grid_field remains None
+    # --- End Grid Fetch and Format ---
 
     embed = {
         "title": f"{event_emoji} F1 {event_type} Reminder!", # Add event-specific emoji
@@ -231,20 +325,20 @@ def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
             },
             {
                 "name": ":cloud: Weather Forecast", # Remove bold
-                "value": weather_info,
-                "inline": False
-            },
-            # Add Rain Radar link field
-            {
-                "name": ":cloud_with_rain: Rain Radar",
-                "value": f"[View Radar]({rain_radar_url})",
+                "value": weather_field_value, # Use the combined string
                 "inline": False
             },
             # Add Live Timings link field
             {
                 "name": "Live Timings",
                 "value": "[F1 Dashboard](https://f1-dash.com/dashboard)",
-                "inline": False
+                "inline": True
+            },
+            # Add Radio Transcripts link field
+            {
+                "name": "📻 Radio Transcripts",
+                "value": "[Box Box Radio](https://www.boxbox-radio.com/radios)",
+                "inline": True
             }
         ],
         "footer": {
@@ -253,6 +347,11 @@ def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
         },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+    # Add the grid field if it was created (i.e., if event_type is Race)
+    if grid_field:
+        embed['fields'].append(grid_field)
+
     return embed, event_emoji
 
 def send_discord_notification(embed):
