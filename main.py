@@ -32,6 +32,10 @@ except (ValueError, TypeError):
 # Load Bot Name from .env, default if missing
 BOT_NAME = os.getenv('BOT_NAME', 'F1 Reminder Bot')
 
+# Global dictionary to store the last notified rain chance for each event
+# Key format: f"{season}_{round}_{event_type}"
+last_notified_pop = {}
+
 # --- Mappings ---
 ERG_TO_OPENF1_CIRCUIT_MAP = {
     "bahrain": 48,
@@ -338,7 +342,9 @@ def format_event_time(race_info, event_type):
         return None, None
 
 def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
-    """Creates a Discord embed object for the notification, including weather."""
+    """Creates a Discord embed object for the notification, including weather.
+       Returns the embed object, event emoji, and the rain chance percentage (pop).
+    """
 
     # Event Emojis
     event_emoji_map = {
@@ -473,7 +479,7 @@ def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
     if grid_field:
         embed['fields'].append(grid_field)
 
-    return embed, event_emoji
+    return embed, event_emoji, pop # Return pop value as well
 
 def send_discord_notification(embed):
     """Sends the notification embed to the Discord webhook."""
@@ -495,7 +501,9 @@ def send_discord_notification(embed):
             print(f"Response text: {response.text}")
 
 def schedule_event_notification(scheduler, race_info, event_type):
-    """Schedules a notification for a specific event if it's in the future."""
+    """Schedules a notification for a specific event if it's in the future.
+       Also schedules recurring weather checks after the initial notification.
+    """
     formatted_time_str, event_dt_utc = format_event_time(race_info, event_type)
 
     if not event_dt_utc:
@@ -510,16 +518,50 @@ def schedule_event_notification(scheduler, race_info, event_type):
     if notification_time > now_utc:
         print(f"Scheduling notification for {race_info['raceName']} {event_type} at {notification_time}")
         # Create embed here to include weather forecast at time of scheduling
-        # Get both embed and emoji, though emoji isn't used here directly
-        embed, _ = create_discord_embed(race_info, event_type, formatted_time_str, event_dt_utc)
+        # Get embed, emoji, AND the initial pop value
+        embed, _, initial_pop = create_discord_embed(race_info, event_type, formatted_time_str, event_dt_utc)
+
+        # --- Schedule Initial Notification ---
+        event_key = f"{race_info['season']}_{race_info['round']}_{event_type}" # Unique key for this event
+        base_job_id = f"{event_key}_notification" # Base ID for jobs related to this event
+
         scheduler.add_job(
             send_discord_notification,
             'date',
             run_date=notification_time,
             args=[embed],
-            id=f"{race_info['season']}_{race_info['round']}_{event_type}_notification", # Unique ID
+            id=base_job_id, # Use base ID
             replace_existing=True # Replace if job with same ID exists
         )
+
+        # --- Store Initial Pop and Schedule Weather Check --- 
+        # Store the initial pop value that will be sent in the first notification
+        last_notified_pop[event_key] = initial_pop 
+        print(f"  Stored initial pop for {event_key}: {initial_pop:.0f}%")
+
+        # Define start and end times for the weather check job
+        # Start checking 30 minutes after the initial notification is sent
+        weather_check_start_time = notification_time + timedelta(minutes=30)
+        # Stop checking when the event actually starts
+        weather_check_end_time = event_dt_utc 
+
+        # Only schedule weather checks if the check period is valid (start is before end)
+        if weather_check_start_time < weather_check_end_time:
+            weather_job_id = f"{event_key}_weather_update"
+            print(f"  Scheduling weather checks for {event_key} starting at {weather_check_start_time}")
+            scheduler.add_job(
+                check_and_notify_weather_update,
+                trigger='interval',
+                minutes=30,
+                start_date=weather_check_start_time,
+                end_date=weather_check_end_time,
+                args=[race_info, event_type, event_dt_utc, event_key],
+                id=weather_job_id,
+                replace_existing=True
+            )
+        else:
+             print(f"  Skipping weather checks for {event_key} - event starts too soon after notification.")
+            
     # else:
         # print(f"Skipping scheduling for {race_info['raceName']} {event_type} - notification time {notification_time} is in the past.")
 
@@ -555,7 +597,7 @@ def find_and_send_next_event():
         print(f"Next event found: {next_race_info['raceName']} - {next_event_type} at {next_event_dt}")
         # Create embed here for the test message, including current weather forecast
         # Get both embed and the calculated emoji
-        embed, event_emoji = create_discord_embed(next_race_info, next_event_type, next_event_formatted_time, next_event_dt)
+        embed, event_emoji, pop = create_discord_embed(next_race_info, next_event_type, next_event_formatted_time, next_event_dt)
         # Keep the test tube for test messages, but use the specific event emoji too
         embed["title"] = f":test_tube: TEST: {event_emoji} F1 {next_event_type} Reminder!"
         # Also update the description for the test notification
@@ -617,7 +659,7 @@ def find_and_send_previous_event():
     if previous_event_dt:
         print(f"Most recent past event found: {previous_race_info['raceName']} - {previous_event_type} at {previous_event_dt}")
         # Create embed for the test message
-        embed, event_emoji = create_discord_embed(previous_race_info, previous_event_type, previous_event_formatted_time, previous_event_dt)
+        embed, event_emoji, pop = create_discord_embed(previous_race_info, previous_event_type, previous_event_formatted_time, previous_event_dt)
         embed["title"] = f":rewind: TEST (Previous): {event_emoji} F1 {previous_event_type} Reminder!"
         # Update description for test message
         embed["description"] = f"**(Test Notification - Previous Event)**\nThe **{previous_event_type}** session for the **[{previous_race_info['raceName']}]({previous_race_info['url']})** occurred {previous_event_formatted_time}."
@@ -652,6 +694,92 @@ def schedule_all_notifications():
         except (KeyboardInterrupt, SystemExit):
             print("Scheduler stopped.")
             scheduler.shutdown()
+
+# --- Additions for Weather Update Notifications ---
+
+def create_weather_update_embed(race_info, event_type, event_dt_utc, current_pop, previous_pop, current_weather_string):
+    """Creates a Discord embed for weather update notifications."""
+    event_key_map = {
+        'Race': '🏎️',
+        'Qualifying': '⏱️',
+        'Sprint': '💨',
+        'FirstPractice': '🔧',
+        'SecondPractice': '🔧',
+        'ThirdPractice': '🔧',
+        'Default': '🏁'
+    }
+    event_emoji = event_key_map.get(event_type, event_key_map['Default'])
+    unix_timestamp = int(event_dt_utc.timestamp())
+
+    # Construct RainViewer link
+    lat = race_info['Circuit']['Location']['lat']
+    lon = race_info['Circuit']['Location']['long']
+    rain_zoom = 9
+    rain_radar_url = f"https://www.rainviewer.com/weather-radar-map-live.html?loc={lat},{lon},{rain_zoom}&oCS=1&c=3&o=83&lm=1&layer=radar&sm=1&sn=1"
+
+    # Create the main weather field value including the radar link
+    weather_field_value = f"{current_weather_string}\n☔ Rain Chance: {current_pop:.0f}% ([Radar]({rain_radar_url}))"
+
+    update_embed = {
+        "title": f"{event_emoji} Weather Update for {race_info['raceName']} {event_type}",
+        "description": f"The weather forecast has changed for the upcoming **{event_type}** session (<t:{unix_timestamp}:R>).",
+        "color": 2326507, # A distinct color (e.g., blue)
+        "fields": [
+            {
+                "name": ":cloud: Updated Forecast",
+                "value": weather_field_value,
+                "inline": False
+            },
+            {
+                "name": "Change Detected",
+                "value": f"Rain chance changed from {previous_pop:.0f}% to **{current_pop:.0f}%**.",
+                "inline": False
+            }
+        ],
+        "footer": {
+            "text": f"{BOT_NAME} - Weather Monitoring"
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    return update_embed
+
+def check_and_notify_weather_update(race_info, event_type, event_dt_utc, event_key):
+    """Checks weather, compares with last known, and sends update if needed."""
+    print(f"Running weather check for: {event_key}")
+    lat = race_info['Circuit']['Location']['lat']
+    lon = race_info['Circuit']['Location']['long']
+
+    try:
+        weather_string, current_pop = fetch_weather(lat, lon, event_dt_utc)
+
+        if weather_string.startswith("Weather fetch failed") or weather_string.startswith("Weather processing error"):
+            print(f"  Weather check failed for {event_key}, skipping update.")
+            return
+
+        last_pop = last_notified_pop.get(event_key)
+
+        if last_pop is None:
+            # This case should ideally not happen if scheduled correctly
+            print(f"  Error: Last notified pop not found for {event_key}. Storing current pop ({current_pop:.0f}%) and skipping notification.")
+            last_notified_pop[event_key] = current_pop
+            return
+
+        # Define a threshold for notification (e.g., change of 5% or more)
+        pop_threshold = 5.0
+
+        if abs(current_pop - last_pop) >= pop_threshold:
+            print(f"  Significant weather change detected for {event_key}! Old: {last_pop:.0f}%, New: {current_pop:.0f}%")
+            update_embed = create_weather_update_embed(race_info, event_type, event_dt_utc, current_pop, last_pop, weather_string)
+            send_discord_notification(update_embed)
+            last_notified_pop[event_key] = current_pop # Update the stored value
+            print(f"  Weather update notification sent for {event_key}.")
+        # else:
+            # print(f"  Weather check for {event_key}: No significant change (Current: {current_pop:.0f}%, Last Notified: {last_pop:.0f}%)")
+
+    except Exception as e:
+        print(f"  An error occurred during weather check for {event_key}: {e}")
+
+# --- End Additions ---
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="F1 Event Reminder Bot")
