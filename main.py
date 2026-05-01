@@ -89,7 +89,8 @@ def fetch_starting_grid(season, round_num):
     # Use the round-specific endpoint - Use jolpi.ca mirror
     grid_url = f"https://api.jolpi.ca/ergast/f1/{season}/{round_num}/qualifying.json"
     # grid_url = f"https://ergast.com/api/f1/{season}/{round_num}/qualifying.json" # Official Ergast API endpoint (being deprecated)
-    print(f"Fetching starting grid from: {grid_url}") # Updated log message
+    print(f"Fetching starting grid from: {grid_url}")
+    response = None
     try:
         response = requests.get(grid_url)
         response.raise_for_status()
@@ -97,11 +98,9 @@ def fetch_starting_grid(season, round_num):
 
         races_data = data.get('MRData', {}).get('RaceTable', {}).get('Races', [])
         if not races_data:
-            # This might happen if the round number is invalid or qualifying data doesn't exist yet
             print(f"No race data found in qualifying response for {season} round {round_num}.")
             return None
 
-        # Since we requested a specific round, we expect only one race object
         target_race = races_data[0]
 
         qualifying_results = target_race.get('QualifyingResults', [])
@@ -109,17 +108,15 @@ def fetch_starting_grid(season, round_num):
             print(f"No qualifying results found for round {round_num}.")
             return None
 
-        # Sort by position just in case the API doesn't guarantee it (it usually does)
         qualifying_results.sort(key=lambda x: int(x.get('position', 99)))
         print(f"Successfully found {len(qualifying_results)} qualifying results for round {round_num}.")
         return qualifying_results
 
     except requests.exceptions.RequestException as e:
-        # Check for 404 or other errors that might indicate missing data for the specific round
         if response is not None and response.status_code == 404:
-             print(f"Qualifying data not found (404) for {season} round {round_num}.")
+            print(f"Qualifying data not found (404) for {season} round {round_num}.")
         else:
-             print(f"Error fetching starting grid: {e}")
+            print(f"Error fetching starting grid: {e}")
         return None
     except json.JSONDecodeError:
         print("Error decoding JSON response from qualifying API.")
@@ -490,13 +487,14 @@ def send_discord_notification(embed):
     headers = {'Content-Type': 'application/json'}
     payload = json.dumps({'embeds': [embed]})
 
+    response = None
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, headers=headers, data=payload)
         response.raise_for_status()
         print(f"Successfully sent notification for: {embed['description']}")
     except requests.exceptions.RequestException as e:
         print(f"Error sending Discord notification: {e}")
-        if response:
+        if response is not None:
             print(f"Response status: {response.status_code}")
             print(f"Response text: {response.text}")
 
