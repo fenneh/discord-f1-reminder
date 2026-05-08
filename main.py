@@ -69,6 +69,16 @@ ERG_TO_OPENF1_CIRCUIT_MAP = {
 EVENT_TYPES_ORDERED = ['FirstPractice', 'SecondPractice', 'ThirdPractice', 'Sprint', 'Qualifying', 'Race']
 EVENT_TYPES_REVERSED = list(reversed(EVENT_TYPES_ORDERED))
 
+EVENT_EMOJI_MAP = {
+    'Race': '🏎️',
+    'Qualifying': '⏱️',
+    'Sprint': '💨',
+    'FirstPractice': '🔧',
+    'SecondPractice': '🔧',
+    'ThirdPractice': '🔧',
+    'Default': '🏁',
+}
+
 
 def fetch_schedule():
     """Fetches the current F1 season schedule."""
@@ -298,18 +308,6 @@ def format_event_time(race_info, event_type):
         tuple: A tuple containing the formatted string and the datetime object (UTC).
                Returns (None, None) if the event time is not available.
     """
-    event_key_map = {
-        'Race': ('date', 'time'),
-        'Qualifying': ('Qualifying', 'time'),
-        'Sprint': ('Sprint', 'time'),
-        'FirstPractice': ('FirstPractice', 'time'),
-        'SecondPractice': ('SecondPractice', 'time'),
-        'ThirdPractice': ('ThirdPractice', 'time'),
-    }
-
-    date_key = event_key_map[event_type][0]
-    time_key = event_key_map[event_type][1]
-
     if event_type == 'Race':
         event_date_str = race_info.get('date')
         event_time_str = race_info.get('time')
@@ -343,17 +341,7 @@ def create_discord_embed(race_info, event_type, event_time_str, event_dt_utc):
        Returns the embed object, event emoji, and the rain chance percentage (pop).
     """
 
-    # Event Emojis
-    event_emoji_map = {
-        'Race': '🏎️',
-        'Qualifying': '⏱️',
-        'Sprint': '💨',
-        'FirstPractice': '🔧',
-        'SecondPractice': '🔧',
-        'ThirdPractice': '🔧',
-        'Default': '🏁' # Checkered flag as default
-    }
-    event_emoji = event_emoji_map.get(event_type, event_emoji_map['Default'])
+    event_emoji = EVENT_EMOJI_MAP.get(event_type, EVENT_EMOJI_MAP['Default'])
 
     # Fetch Weather
     lat = race_info['Circuit']['Location']['lat']
@@ -677,10 +665,8 @@ def schedule_all_notifications():
 
     scheduler = BlockingScheduler(timezone="UTC")
 
-    event_types = ['Race', 'Qualifying', 'Sprint', 'FirstPractice', 'SecondPractice', 'ThirdPractice']
-
     for race in schedule:
-        for event_type in event_types:
+        for event_type in EVENT_TYPES_ORDERED:
             schedule_event_notification(scheduler, race, event_type)
 
     if not scheduler.get_jobs():
@@ -697,16 +683,7 @@ def schedule_all_notifications():
 
 def create_weather_update_embed(race_info, event_type, event_dt_utc, current_pop, previous_pop, current_weather_string):
     """Creates a Discord embed for weather update notifications."""
-    event_key_map = {
-        'Race': '🏎️',
-        'Qualifying': '⏱️',
-        'Sprint': '💨',
-        'FirstPractice': '🔧',
-        'SecondPractice': '🔧',
-        'ThirdPractice': '🔧',
-        'Default': '🏁'
-    }
-    event_emoji = event_key_map.get(event_type, event_key_map['Default'])
+    event_emoji = EVENT_EMOJI_MAP.get(event_type, EVENT_EMOJI_MAP['Default'])
     unix_timestamp = int(event_dt_utc.timestamp())
 
     # Construct RainViewer link
