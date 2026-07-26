@@ -11,16 +11,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
 
       - name: Deploy to Dokku
-        run: |
-          ssh root@${{ secrets.SSH_HOST }} "cd /root/git/discord-f1-reminder && git pull && git archive --format=tar HEAD | dokku git:from-archive f1-reminder --"
+        uses: dokku/github-action@cc7dec1d2b9fed249a14ae462bc953bba436f78c  # v1.10.0
+        with:
+          git_remote_url: ${{ secrets.DOKKU_REMOTE_URL }}
+          ssh_private_key: ${{ secrets.DOKKU_SSH_KEY }}
+          git_push_flags: --force
