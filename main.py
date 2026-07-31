@@ -18,6 +18,8 @@ F1_API_URL = "https://api.jolpi.ca/ergast/f1/current.json" # Use jolpi.ca mirror
 WEATHER_API_KEY = os.getenv('WEATHER_API_KEY') # Add Weather API Key
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/forecast"
 
+REQUEST_TIMEOUT_SECONDS = 10
+
 # Load notification lead time from .env, default to 180 minutes (3 hours)
 DEFAULT_LEAD_MINUTES = 180
 try:
@@ -83,7 +85,7 @@ EVENT_EMOJI_MAP = {
 def fetch_schedule():
     """Fetches the current F1 season schedule."""
     try:
-        response = requests.get(F1_API_URL)
+        response = requests.get(F1_API_URL, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status() # Raise an exception for bad status codes
         data = response.json()
         return data['MRData']['RaceTable']['Races']
@@ -102,7 +104,7 @@ def fetch_starting_grid(season, round_num):
     print(f"Fetching starting grid from: {grid_url}")
     response = None
     try:
-        response = requests.get(grid_url)
+        response = requests.get(grid_url, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
         data = response.json()
 
@@ -153,7 +155,7 @@ def fetch_starting_grid_openf1(season, circuit_id):
     try:
         # 1. Find the session_key for Qualifying
         print(f"  Fetching OpenF1 session key from: {openf1_session_url}")
-        response = requests.get(openf1_session_url)
+        response = requests.get(openf1_session_url, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
         sessions_data = response.json()
         if not sessions_data:
@@ -169,7 +171,7 @@ def fetch_starting_grid_openf1(season, circuit_id):
         # 2. Fetch the results for that session_key
         openf1_results_url = f"https://api.openf1.org/v1/results?session_key={session_key}"
         print(f"  Fetching OpenF1 results from: {openf1_results_url}")
-        response = requests.get(openf1_results_url)
+        response = requests.get(openf1_results_url, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
         results_data = response.json()
         if not results_data:
@@ -235,7 +237,7 @@ def fetch_weather(lat, lon, event_dt_utc):
             'appid': WEATHER_API_KEY,
             'units': 'metric' # Use metric units (Celsius)
         }
-        response = requests.get(WEATHER_API_URL, params=params)
+        response = requests.get(WEATHER_API_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
         weather_data = response.json()
 
@@ -477,7 +479,7 @@ def send_discord_notification(embed):
 
     response = None
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, headers=headers, data=payload)
+        response = requests.post(DISCORD_WEBHOOK_URL, headers=headers, data=payload, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
         print(f"Successfully sent notification for: {embed['description']}")
     except requests.exceptions.RequestException as e:
