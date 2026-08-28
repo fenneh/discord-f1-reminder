@@ -3,7 +3,6 @@
 import os
 import requests
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -561,7 +560,6 @@ def find_and_send_next_event():
         print("Could not fetch schedule. Aborting test.")
         return
 
-    next_event = None
     next_event_dt = None
     next_event_type = None
     next_race_info = None
