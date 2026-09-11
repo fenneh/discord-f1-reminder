@@ -1,6 +1,10 @@
 from datetime import datetime, timezone
+from unittest.mock import Mock
 
-from main import create_weather_update_embed, format_event_time
+import requests
+
+import main
+from main import create_weather_update_embed, fetch_weather, format_event_time
 
 RACE_INFO = {
     "date": "2024-03-02",
@@ -77,3 +81,68 @@ def test_weather_update_embed_unknown_event_type_uses_default_emoji():
         RACE_INFO_WITH_CIRCUIT, "Shakedown", event_dt, 10.0, 5.0, "Sunny"
     )
     assert embed["title"].startswith("🏁")
+
+
+def _forecast(dt, description="Clear", icon="01d", temp=20.0, feels_like=19.0,
+              humidity=50, wind_speed=5.0, pop=0.4):
+    return {
+        "dt": dt,
+        "weather": [{"description": description, "icon": icon}],
+        "main": {"temp": temp, "feels_like": feels_like, "humidity": humidity},
+        "wind": {"speed": wind_speed},
+        "pop": pop,
+    }
+
+
+def test_fetch_weather_without_api_key(monkeypatch):
+    monkeypatch.setattr(main, "WEATHER_API_KEY", None)
+    event_dt = datetime(2024, 3, 2, 15, 0, 0, tzinfo=timezone.utc)
+    weather_string, pop = fetch_weather(50.4, 5.9, event_dt)
+    assert weather_string == "Weather N/A (No API Key)"
+    assert pop == 0
+
+
+def test_fetch_weather_picks_closest_forecast(monkeypatch):
+    monkeypatch.setattr(main, "WEATHER_API_KEY", "fake-key")
+    event_dt = datetime(2024, 3, 2, 15, 0, 0, tzinfo=timezone.utc)
+    event_ts = int(event_dt.timestamp())
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {
+        "list": [
+            _forecast(event_ts - 3 * 3600, description="Cloudy", pop=0.1),
+            _forecast(event_ts + 1800, description="Light Rain", icon="10d", pop=0.6),
+            _forecast(event_ts + 3 * 3600, description="Clear", pop=0.0),
+        ]
+    }
+    monkeypatch.setattr(main.requests, "get", Mock(return_value=response))
+
+    weather_string, pop = fetch_weather(50.4, 5.9, event_dt)
+    assert "Light Rain" in weather_string
+    assert pop == 60.0
+
+
+def test_fetch_weather_no_matching_forecast(monkeypatch):
+    monkeypatch.setattr(main, "WEATHER_API_KEY", "fake-key")
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {"list": []}
+    monkeypatch.setattr(main.requests, "get", Mock(return_value=response))
+
+    event_dt = datetime(2024, 3, 2, 15, 0, 0, tzinfo=timezone.utc)
+    weather_string, pop = fetch_weather(50.4, 5.9, event_dt)
+    assert weather_string == "Weather forecast not available for this time."
+    assert pop == 0
+
+
+def test_fetch_weather_request_exception(monkeypatch):
+    monkeypatch.setattr(main, "WEATHER_API_KEY", "fake-key")
+    monkeypatch.setattr(
+        main.requests, "get", Mock(side_effect=requests.exceptions.ConnectionError())
+    )
+
+    event_dt = datetime(2024, 3, 2, 15, 0, 0, tzinfo=timezone.utc)
+    weather_string, pop = fetch_weather(50.4, 5.9, event_dt)
+    assert weather_string == "Weather fetch failed"
+    assert pop == 0
