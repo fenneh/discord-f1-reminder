@@ -4,7 +4,7 @@ Discord bot that sends reminders for F1 race weekend sessions with weather forec
 
 ## Features
 
-- Notifications before Practice, Qualifying, Sprint, and Race sessions
+- Notifications before Practice, Sprint Qualifying, Qualifying, Sprint, and Race sessions
 - Weather forecasts with rain probability and radar links
 - Weather update alerts when rain chance changes significantly
 - Live timing links and circuit info

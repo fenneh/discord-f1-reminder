@@ -4,7 +4,12 @@ from unittest.mock import Mock
 import requests
 
 import main
-from main import create_weather_update_embed, fetch_weather, format_event_time
+from main import (
+    create_weather_update_embed,
+    fetch_weather,
+    format_event_time,
+    schedule_event_notification,
+)
 
 RACE_INFO = {
     "date": "2024-03-02",
@@ -44,6 +49,46 @@ def test_sprint_event():
 def test_first_practice():
     s, dt = format_event_time(RACE_INFO, "FirstPractice")
     assert dt == datetime(2024, 2, 29, 11, 30, 0, tzinfo=timezone.utc)
+
+
+def test_sprint_qualifying_event():
+    race_info = {
+        **RACE_INFO,
+        "SprintQualifying": {"date": "2024-03-01", "time": "10:30:00Z"},
+    }
+    s, dt = format_event_time(race_info, "SprintQualifying")
+    assert dt == datetime(2024, 3, 1, 10, 30, 0, tzinfo=timezone.utc)
+    assert s is not None
+
+
+def test_sprint_qualifying_notification_is_scheduled(monkeypatch):
+    monkeypatch.setattr(main, "WEATHER_API_KEY", None)
+    race_info = {
+        "season": "2026",
+        "round": "2",
+        "raceName": "Test Grand Prix",
+        "url": "https://example.com/race",
+        "date": "2099-03-15",
+        "time": "15:00:00Z",
+        "SprintQualifying": {"date": "2099-03-13", "time": "12:00:00Z"},
+        "Circuit": {
+            "circuitId": "bahrain",
+            "circuitName": "Test Circuit",
+            "url": "https://example.com/circuit",
+            "Location": {
+                "lat": "26.0325",
+                "long": "50.5106",
+                "locality": "Sakhir",
+                "country": "Bahrain",
+            },
+        },
+    }
+    scheduler = Mock()
+
+    schedule_event_notification(scheduler, race_info, "SprintQualifying")
+
+    notification_job = scheduler.add_job.call_args_list[0]
+    assert notification_job.kwargs["id"] == "2026_2_SprintQualifying_notification"
 
 
 def test_missing_event_type():

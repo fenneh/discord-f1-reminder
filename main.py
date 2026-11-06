@@ -67,12 +67,13 @@ ERG_TO_OPENF1_CIRCUIT_MAP = {
 }
 
 # Define event types in order of typical occurrence within a race weekend
-EVENT_TYPES_ORDERED = ['FirstPractice', 'SecondPractice', 'ThirdPractice', 'Sprint', 'Qualifying', 'Race']
+EVENT_TYPES_ORDERED = ['FirstPractice', 'SprintQualifying', 'SecondPractice', 'ThirdPractice', 'Sprint', 'Qualifying', 'Race']
 EVENT_TYPES_REVERSED = list(reversed(EVENT_TYPES_ORDERED))
 
 EVENT_EMOJI_MAP = {
     'Race': '🏎️',
     'Qualifying': '⏱️',
+    'SprintQualifying': '⏱️',
     'Sprint': '💨',
     'FirstPractice': '🔧',
     'SecondPractice': '🔧',
