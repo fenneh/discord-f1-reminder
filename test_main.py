@@ -62,7 +62,6 @@ def test_sprint_qualifying_event():
 
 
 def test_sprint_qualifying_notification_is_scheduled(monkeypatch):
-    monkeypatch.setattr(main, "WEATHER_API_KEY", None)
     race_info = {
         "season": "2026",
         "round": "2",
@@ -83,12 +82,35 @@ def test_sprint_qualifying_notification_is_scheduled(monkeypatch):
             },
         },
     }
+    create_embed = Mock()
+    monkeypatch.setattr(main, "create_discord_embed", create_embed)
     scheduler = Mock()
 
     schedule_event_notification(scheduler, race_info, "SprintQualifying")
 
     notification_job = scheduler.add_job.call_args_list[0]
+    assert notification_job.args[0] is main.send_event_notification
     assert notification_job.kwargs["id"] == "2026_2_SprintQualifying_notification"
+    create_embed.assert_not_called()
+
+
+def test_send_event_notification_stores_rain_chance(monkeypatch):
+    event_dt = datetime(2099, 3, 13, 12, 0, 0, tzinfo=timezone.utc)
+    race_info = {
+        "raceName": "Test Grand Prix",
+        "season": "2026",
+        "round": "2",
+        "Circuit": {"Location": {"lat": "26.0325", "long": "50.5106"}},
+    }
+    sent = []
+    monkeypatch.setattr(main, "create_discord_embed", Mock(return_value=({"title": "test"}, "⏱️", 35.0)))
+    monkeypatch.setattr(main, "send_discord_notification", sent.append)
+    main.last_notified_pop.clear()
+
+    main.send_event_notification(race_info, "SprintQualifying", "Fri, Mar 13, 2099 at 12:00 UTC", event_dt, "2026_2_SprintQualifying")
+
+    assert sent == [{"title": "test"}]
+    assert main.last_notified_pop["2026_2_SprintQualifying"] == 35.0
 
 
 def test_missing_event_type():

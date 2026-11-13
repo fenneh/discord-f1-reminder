@@ -488,6 +488,12 @@ def send_discord_notification(embed):
             print(f"Response status: {response.status_code}")
             print(f"Response text: {response.text}")
 
+def send_event_notification(race_info, event_type, event_time_str, event_dt_utc, event_key):
+    """Builds the notification embed at send time and records its rain chance."""
+    embed, _, pop = create_discord_embed(race_info, event_type, event_time_str, event_dt_utc)
+    send_discord_notification(embed)
+    last_notified_pop[event_key] = pop
+
 def schedule_event_notification(scheduler, race_info, event_type):
     """Schedules a notification for a specific event if it's in the future.
        Also schedules recurring weather checks after the initial notification.
@@ -505,27 +511,19 @@ def schedule_event_notification(scheduler, race_info, event_type):
     # Only schedule if the notification time is in the future
     if notification_time > now_utc:
         print(f"Scheduling notification for {race_info['raceName']} {event_type} at {notification_time}")
-        # Create embed here to include weather forecast at time of scheduling
-        # Get embed, emoji, AND the initial pop value
-        embed, _, initial_pop = create_discord_embed(race_info, event_type, formatted_time_str, event_dt_utc)
 
         # --- Schedule Initial Notification ---
         event_key = f"{race_info['season']}_{race_info['round']}_{event_type}" # Unique key for this event
         base_job_id = f"{event_key}_notification" # Base ID for jobs related to this event
 
         scheduler.add_job(
-            send_discord_notification,
+            send_event_notification,
             'date',
             run_date=notification_time,
-            args=[embed],
+            args=[race_info, event_type, formatted_time_str, event_dt_utc, event_key],
             id=base_job_id, # Use base ID
             replace_existing=True # Replace if job with same ID exists
         )
-
-        # --- Store Initial Pop and Schedule Weather Check --- 
-        # Store the initial pop value that will be sent in the first notification
-        last_notified_pop[event_key] = initial_pop 
-        print(f"  Stored initial pop for {event_key}: {initial_pop:.0f}%")
 
         # Define start and end times for the weather check job
         # Start checking 30 minutes after the initial notification is sent
