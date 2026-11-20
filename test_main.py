@@ -5,6 +5,7 @@ import requests
 
 import main
 from main import (
+    create_discord_embed,
     create_weather_update_embed,
     fetch_weather,
     format_event_time,
@@ -213,3 +214,114 @@ def test_fetch_weather_request_exception(monkeypatch):
     weather_string, pop = fetch_weather(50.4, 5.9, event_dt)
     assert weather_string == "Weather fetch failed"
     assert pop == 0
+
+
+EMBED_RACE_INFO = {
+    **RACE_INFO,
+    "raceName": "Test Grand Prix",
+    "url": "https://example.com/race",
+    "season": "2024",
+    "round": "1",
+    "Circuit": {
+        "circuitId": "spa",
+        "circuitName": "Test Circuit",
+        "url": "https://example.com/circuit",
+        "Location": {
+            "lat": "50.4372",
+            "long": "5.9714",
+            "locality": "Spa",
+            "country": "Belgium",
+        },
+    },
+}
+
+EMBED_EVENT_DT = datetime(2024, 3, 2, 15, 0, 0, tzinfo=timezone.utc)
+
+
+def test_create_discord_embed_builds_core_fields(monkeypatch):
+    monkeypatch.setattr(main, "fetch_weather", Mock(return_value=("Sunny", 20.0)))
+
+    embed, emoji, pop = create_discord_embed(
+        EMBED_RACE_INFO, "Qualifying", "Fri, Mar 1, 2024 at 12:00 UTC", EMBED_EVENT_DT
+    )
+
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert "F1 Qualifying Reminder!" in embed["title"]
+    assert "Test Grand Prix" in embed["description"]
+    assert fields["Qualifying Start Time"].startswith("<t:")
+    assert fields["Round"] == "1"
+    assert "Test Circuit" in fields["Circuit"]
+    assert fields["Location"] == "Spa, Belgium"
+    assert "Sunny" in fields[":cloud: Weather Forecast"]
+    assert "Rain Chance: 20%" in fields[":cloud: Weather Forecast"]
+    assert embed["footer"]["text"] == f"{main.BOT_NAME} - Season 2024"
+    assert emoji == main.EVENT_EMOJI_MAP["Qualifying"]
+    assert pop == 20.0
+
+
+def test_create_discord_embed_formats_ergast_grid(monkeypatch):
+    monkeypatch.setattr(main, "fetch_weather", Mock(return_value=("Dry", 10.0)))
+    monkeypatch.setattr(
+        main,
+        "fetch_starting_grid",
+        Mock(
+            return_value=[
+                {"position": 1, "Driver": {"familyName": "Verstappen"}},
+                {"position": 2, "Driver": {"familyName": "Norris"}},
+                {"position": 3, "Driver": {"familyName": "Leclerc"}},
+            ]
+        ),
+    )
+    openf1 = Mock()
+    monkeypatch.setattr(main, "fetch_starting_grid_openf1", openf1)
+
+    embed, _, _ = create_discord_embed(EMBED_RACE_INFO, "Race", "Sat", EMBED_EVENT_DT)
+
+    openf1.assert_not_called()
+    grid_field = embed["fields"][-1]
+    assert grid_field["name"].endswith("Starting Grid")
+    assert grid_field["value"].startswith("```\n")
+    assert "P1  Verstappen | P2  Norris" in grid_field["value"]
+    assert "P3  Leclerc" in grid_field["value"]
+
+
+def test_create_discord_embed_falls_back_to_openf1_grid(monkeypatch):
+    monkeypatch.setattr(main, "fetch_weather", Mock(return_value=("Dry", 10.0)))
+    monkeypatch.setattr(main, "fetch_starting_grid", Mock(return_value=None))
+    openf1 = Mock(
+        return_value=[
+            {"position": 1, "Driver": {"familyName": "Verstappen"}},
+            {"position": 10, "Driver": {"familyName": "Alonso"}},
+        ]
+    )
+    monkeypatch.setattr(main, "fetch_starting_grid_openf1", openf1)
+
+    embed, _, _ = create_discord_embed(EMBED_RACE_INFO, "Race", "Sat", EMBED_EVENT_DT)
+
+    openf1.assert_called_once_with("2024", "spa")
+    grid_field = embed["fields"][-1]
+    assert grid_field["name"].endswith("Starting Grid")
+    assert "P1  Verstappen | P10 Alonso" in grid_field["value"]
+
+
+def test_create_discord_embed_omits_grid_when_unavailable(monkeypatch):
+    monkeypatch.setattr(main, "fetch_weather", Mock(return_value=("Dry", 10.0)))
+    monkeypatch.setattr(main, "fetch_starting_grid", Mock(return_value=None))
+    monkeypatch.setattr(main, "fetch_starting_grid_openf1", Mock(return_value=None))
+
+    embed, _, _ = create_discord_embed(EMBED_RACE_INFO, "Race", "Sat", EMBED_EVENT_DT)
+
+    assert all(not field["name"].endswith("Starting Grid") for field in embed["fields"])
+
+
+def test_create_discord_embed_skips_grid_for_practice(monkeypatch):
+    monkeypatch.setattr(main, "fetch_weather", Mock(return_value=("Dry", 10.0)))
+    fetch_grid = Mock()
+    monkeypatch.setattr(main, "fetch_starting_grid", fetch_grid)
+
+    embed, _, _ = create_discord_embed(
+        EMBED_RACE_INFO, "FirstPractice", "Thu", EMBED_EVENT_DT
+    )
+
+    fetch_grid.assert_not_called()
+    assert all(not field["name"].endswith("Starting Grid") for field in embed["fields"])
